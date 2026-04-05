@@ -44,29 +44,16 @@ export interface RoomUser {
   isConnected: boolean;
 }
 
-export type SupportedLang =
-  | "es"
-  | "en"
-  | "zh"
-  | "fr"
-  | "de"
-  | "pt"
-  | "ja"
-  | "ko"
-  | "it"
-  | "ru"
-  | "ar";
+export type SupportedLang = "es" | "en" | "zh";
 
 export const LANGUAGES: Record<SupportedLang, string> = {
   es: "Español",
   en: "English",
   zh: "中文",
-  fr: "Français",
-  de: "Deutsch",
-  pt: "Português",
-  ja: "日本語",
-  ko: "한국어",
-  it: "Italiano",
-  ru: "Русский",
-  ar: "العربية",
+};
+
+export const LANG_SPEECH_CODES: Record<SupportedLang, string> = {
+  es: "es-ES",
+  en: "en-US",
+  zh: "zh-CN",
 };

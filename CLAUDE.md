@@ -4,6 +4,8 @@
 
 yucall-AI is a real-time bidirectional translation app for calls. Two people in a call (WeChat PC, Zoom, Google Meet, etc.) each open the app, join a shared room, and speak in their own language. Each person sees the other's words translated to their language in real-time.
 
+**Supported languages**: Spanish, English, Chinese.
+
 ## Tech Stack
 
 - **Framework**: Next.js 16 (App Router) with TypeScript
@@ -11,7 +13,8 @@ yucall-AI is a real-time bidirectional translation app for calls. Two people in 
 - **State**: Zustand
 - **Sync**: HTTP polling via Next.js API routes (upgradeable to PartyKit/WebSocket)
 - **STT**: Web Speech API (Chrome + Safari)
-- **Translation**: Chrome Translator API (with fallback for Safari)
+- **Translation (Chrome)**: Chrome Translator API (local, on-device)
+- **Translation (Safari/fallback)**: Transformers.js + OPUS-MT models (local, in-browser)
 - **Deploy**: Vercel
 
 ## Architecture
@@ -21,27 +24,33 @@ Browser A (mic → STT → text) ──→ API relay ──→ Browser B (text �
 Browser B (mic → STT → text) ──→ API relay ──→ Browser A (text → translate → display)
 ```
 
-All heavy processing (STT + translation) runs in the browser. The server only relays text messages (~100 bytes each).
+All heavy processing (STT + translation) runs in the browser. The server only relays text messages (~100 bytes each). Translation happens on the **receiver's** browser, translating incoming text to the local user's language.
 
 ## Project Structure
 
 ```
 src/
   app/
-    page.tsx                    # Landing: create/join room
-    room/[id]/page.tsx          # Main translation session
-    api/ws/route.ts             # HTTP polling relay server
-    layout.tsx                  # Root layout
-    globals.css                 # Global styles + shadcn theme
-  components/ui/                # shadcn/ui components
+    page.tsx                         # Landing: create/join room
+    room/[id]/page.tsx               # Main translation session
+    api/ws/route.ts                  # HTTP polling relay server
+    layout.tsx                       # Root layout
+    globals.css                      # Global styles + shadcn theme
+  components/
+    ui/                              # shadcn/ui components
+    audio-visualizer.tsx             # Real-time waveform display
+    theme-toggle.tsx                 # Dark/light theme toggle
   lib/
-    audio/microphone.ts         # getUserMedia wrapper
-    stt/web-speech-engine.ts    # Web Speech API engine
-    translation/translator.ts   # Chrome Translator API + fallback
-    sync/room-client.ts         # Room sync client (HTTP polling)
-    utils/capability-detect.ts  # Browser API detection
-  stores/session-store.ts       # Zustand session state
-  types/index.ts                # Shared TypeScript types
+    audio/microphone.ts              # getUserMedia wrapper
+    stt/web-speech-engine.ts         # Web Speech API engine
+    translation/translator.ts        # Chrome Translator API + fallback interface
+    translation/transformers-translator.ts  # Transformers.js OPUS-MT (Safari)
+    sync/room-client.ts              # Room sync client (HTTP polling)
+    utils/capability-detect.ts       # Browser API detection
+  stores/session-store.ts            # Zustand session state
+  types/index.ts                     # Shared TypeScript types
+public/
+  manifest.json                      # PWA manifest
 ```
 
 ## Commands
@@ -70,8 +79,16 @@ npx tsc --noEmit # Type check
 
 ### Supported Browsers
 
-- Chrome (full support: Web Speech API + Chrome Translator API)
-- Safari (partial: Web Speech API + Transformers.js for translation)
+- **Chrome** (full support: Web Speech API + Chrome Translator API)
+- **Safari** (Web Speech API + Transformers.js OPUS-MT for translation)
+
+### Translation Fallback Chain
+
+1. Chrome Translator API (fastest, Chrome only)
+2. Transformers.js + OPUS-MT models (cross-browser, downloads ~60MB per language pair on first use)
+3. Passthrough (no translation, shows original text)
+
+For es↔zh translation, Transformers.js uses a two-step process through English (es→en→zh or zh→en→es).
 
 ## Environment Setup
 
