@@ -1,44 +1,32 @@
-// WebSocket relay server for room-based messaging
-// In production, this should be replaced with PartyKit or similar
-// For now, we use a simple in-memory approach via polling with Server-Sent Events
-
 import { NextRequest, NextResponse } from "next/server";
+import { Redis } from "@upstash/redis";
 
-interface RoomData {
-  messages: Array<{ data: string; timestamp: number }>;
-  lastCleanup: number;
-}
+const MESSAGE_TTL = 300; // 5 minutes
 
-const rooms = new Map<string, RoomData>();
-
-function getRoom(roomId: string): RoomData {
-  if (!rooms.has(roomId)) {
-    rooms.set(roomId, { messages: [], lastCleanup: Date.now() });
+let _redis: Redis | null = null;
+function getRedis(): Redis {
+  if (!_redis) {
+    _redis = Redis.fromEnv();
   }
-  return rooms.get(roomId)!;
-}
-
-function cleanupOldMessages(room: RoomData): void {
-  const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-  room.messages = room.messages.filter((m) => m.timestamp > fiveMinutesAgo);
-  room.lastCleanup = Date.now();
+  return _redis;
 }
 
 // POST: Send a message to the room
 export async function POST(request: NextRequest) {
   const roomId = request.nextUrl.searchParams.get("room");
   if (!roomId) {
-    return NextResponse.json({ error: "Missing room parameter" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Missing room parameter" },
+      { status: 400 },
+    );
   }
 
   const body = await request.json();
-  const room = getRoom(roomId);
+  const key = `room:${roomId}:messages`;
+  const entry = JSON.stringify({ ...body, _ts: Date.now() });
 
-  room.messages.push({ data: JSON.stringify(body), timestamp: Date.now() });
-
-  if (Date.now() - room.lastCleanup > 60_000) {
-    cleanupOldMessages(room);
-  }
+  await getRedis().lpush(key, entry);
+  await getRedis().expire(key, MESSAGE_TTL);
 
   return NextResponse.json({ ok: true });
 }
@@ -49,13 +37,22 @@ export async function GET(request: NextRequest) {
   const since = Number(request.nextUrl.searchParams.get("since") || "0");
 
   if (!roomId) {
-    return NextResponse.json({ error: "Missing room parameter" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Missing room parameter" },
+      { status: 400 },
+    );
   }
 
-  const room = getRoom(roomId);
-  const newMessages = room.messages
-    .filter((m) => m.timestamp > since)
-    .map((m) => ({ ...JSON.parse(m.data), _timestamp: m.timestamp }));
+  const key = `room:${roomId}:messages`;
+  const raw = (await getRedis().lrange(key, 0, 49)) as string[];
 
-  return NextResponse.json({ messages: newMessages, timestamp: Date.now() });
+  const messages = raw
+    .map((entry) => {
+      const parsed = typeof entry === "string" ? JSON.parse(entry) : entry;
+      return parsed;
+    })
+    .filter((m) => m._ts > since)
+    .reverse(); // oldest first
+
+  return NextResponse.json({ messages, timestamp: Date.now() });
 }

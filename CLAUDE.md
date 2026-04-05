@@ -11,7 +11,7 @@ yucall-AI is a real-time bidirectional translation app for calls. Two people in 
 - **Framework**: Next.js 16 (App Router) with TypeScript
 - **UI**: shadcn/ui + Tailwind CSS v4
 - **State**: Zustand
-- **Sync**: HTTP polling via Next.js API routes (upgradeable to PartyKit/WebSocket)
+- **Sync**: Upstash Redis + HTTP polling via Next.js API routes
 - **STT**: Web Speech API (Chrome + Safari)
 - **Translation (Chrome)**: Chrome Translator API (local, on-device)
 - **Translation (Safari/fallback)**: Transformers.js + OPUS-MT models (local, in-browser)
@@ -20,11 +20,11 @@ yucall-AI is a real-time bidirectional translation app for calls. Two people in 
 ## Architecture
 
 ```
-Browser A (mic → STT → text) ──→ API relay ──→ Browser B (text → translate → display)
-Browser B (mic → STT → text) ──→ API relay ──→ Browser A (text → translate → display)
+Browser A (mic → STT → text) ──→ Vercel API + Redis ──→ Browser B (text → translate → display)
+Browser B (mic → STT → text) ──→ Vercel API + Redis ──→ Browser A (text → translate → display)
 ```
 
-All heavy processing (STT + translation) runs in the browser. The server only relays text messages (~100 bytes each). Translation happens on the **receiver's** browser, translating incoming text to the local user's language.
+All heavy processing (STT + translation) runs in the browser. The server only relays text messages (~100 bytes each) via Upstash Redis. Translation happens on the **receiver's** browser.
 
 ## Project Structure
 
@@ -33,7 +33,7 @@ src/
   app/
     page.tsx                         # Landing: create/join room
     room/[id]/page.tsx               # Main translation session
-    api/ws/route.ts                  # HTTP polling relay server
+    api/ws/route.ts                  # HTTP polling relay (Upstash Redis)
     layout.tsx                       # Root layout
     globals.css                      # Global styles + shadcn theme
   components/
@@ -51,6 +51,7 @@ src/
   types/index.ts                     # Shared TypeScript types
 public/
   manifest.json                      # PWA manifest
+.env.example                         # Environment variables template
 ```
 
 ## Commands
@@ -60,6 +61,42 @@ npm run dev      # Start dev server
 npm run build    # Production build
 npm run lint     # ESLint
 npx tsc --noEmit # Type check
+```
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `UPSTASH_REDIS_REST_URL` | Yes | Upstash Redis REST API URL |
+| `UPSTASH_REDIS_REST_TOKEN` | Yes | Upstash Redis REST API token |
+
+### Local development
+
+```bash
+cp .env.example .env.local
+# Fill in your Upstash Redis credentials
+npm run dev
+```
+
+### Getting Upstash credentials (free)
+
+1. Go to https://console.upstash.com/
+2. Create a free account
+3. Create a new Redis database (any region)
+4. Copy the `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from the dashboard
+
+## Deploy to Vercel
+
+1. Push code to GitHub
+2. Import repository in Vercel dashboard (https://vercel.com/new)
+3. Add environment variables in Vercel project settings:
+   - `UPSTASH_REDIS_REST_URL`
+   - `UPSTASH_REDIS_REST_TOKEN`
+4. Deploy
+
+Or via CLI:
+```bash
+npx vercel --prod
 ```
 
 ## Development Guidelines
@@ -89,12 +126,3 @@ npx tsc --noEmit # Type check
 3. Passthrough (no translation, shows original text)
 
 For es↔zh translation, Transformers.js uses a two-step process through English (es→en→zh or zh→en→es).
-
-## Environment Setup
-
-```bash
-npm install      # Install dependencies
-npm run dev      # Start development server at localhost:3000
-```
-
-No environment variables required for basic development.
