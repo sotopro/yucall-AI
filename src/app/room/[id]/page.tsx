@@ -70,6 +70,7 @@ export default function RoomPage() {
   const [copied, setCopied] = useState(false);
   const [translatorStatus, setTranslatorStatus] = useState<string>("");
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
+  const [sttError, setSttError] = useState<string>("");
 
   // Initialize room connection
   useEffect(() => {
@@ -251,6 +252,7 @@ export default function RoomPage() {
       micRef.current = mic;
       setMicStream(stream);
 
+      setSttError("");
       const stt = new WebSpeechEngine(
         userId,
         userName,
@@ -261,6 +263,12 @@ export default function RoomPage() {
           } else {
             updateInterimTranscript(segment);
           }
+        },
+        (error: string) => {
+          setSttError(error);
+          setIsListening(false);
+          micRef.current?.stop();
+          setMicStream(null);
         },
       );
       stt.start(LANG_SPEECH_CODES[myLang]);
@@ -438,7 +446,12 @@ export default function RoomPage() {
           <CardContent className="flex-1 p-0 min-h-0 overflow-hidden">
             <ScrollArea className="h-full">
               <div ref={myScrollRef} className="p-3 sm:p-4 space-y-2">
-                {myTranscripts.length === 0 && (
+                {sttError && (
+                  <p className="text-red-500 text-sm text-center py-4 px-2">
+                    {sttError}
+                  </p>
+                )}
+                {myTranscripts.length === 0 && !sttError && (
                   <p className="text-muted-foreground text-sm text-center py-8">
                     {isListening
                       ? "Listening... Start speaking."
