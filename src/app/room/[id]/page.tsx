@@ -14,11 +14,9 @@ import { RoomClient } from "@/lib/sync/room-client";
 import { WebSpeechEngine } from "@/lib/stt/web-speech-engine";
 import type { SttStatus } from "@/lib/stt/web-speech-engine";
 import { MicrophoneCapture } from "@/lib/audio/microphone";
-import {
-  ChromeTranslator,
-  FallbackTranslator,
-} from "@/lib/translation/translator";
+import { ChromeTranslator } from "@/lib/translation/translator";
 import { TransformersTranslator } from "@/lib/translation/transformers-translator";
+import { ApiTranslator } from "@/lib/translation/api-translator";
 import { detectCapabilities } from "@/lib/utils/capability-detect";
 import type {
   RoomMessage,
@@ -241,9 +239,9 @@ function RoomPageContent() {
         translatorRef.current = translator;
         setTranslatorStatus("Ready");
       } catch (e) {
-        console.error("Transformers.js failed:", e);
-        translatorRef.current = new FallbackTranslator();
-        setTranslatorStatus("Translation unavailable — showing original text");
+        console.warn("Transformers.js failed, using server-side translation:", e);
+        translatorRef.current = new ApiTranslator(partner!.lang, myLang);
+        setTranslatorStatus("Ready (server)");
       }
 
       setIsLoadingModel(false);
