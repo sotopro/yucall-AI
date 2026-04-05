@@ -427,14 +427,6 @@ function RoomPageContent() {
               </option>
             ))}
           </select>
-          {translatorStatus && (
-            <Badge
-              variant={translatorStatus === "Ready" ? "default" : "outline"}
-              className="text-xs"
-            >
-              {translatorStatus}
-            </Badge>
-          )}
         </div>
         <div className="flex items-center gap-2 w-full sm:w-auto">
           <Button
@@ -463,6 +455,15 @@ function RoomPageContent() {
           </Button>
         </div>
       </div>
+
+      {/* Translation status banner */}
+      {translatorStatus && translatorStatus !== "Ready" && (
+        <div className="px-3 py-2 sm:px-4 border-b flex-shrink-0 bg-muted/50">
+          <p className="text-sm text-center">
+            {translatorStatus}
+          </p>
+        </div>
+      )}
 
       {/* Audio visualizer */}
       {isListening && (
