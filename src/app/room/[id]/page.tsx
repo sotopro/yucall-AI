@@ -12,6 +12,7 @@ import { AudioVisualizer } from "@/components/audio-visualizer";
 import { useSessionStore } from "@/stores/session-store";
 import { RoomClient } from "@/lib/sync/room-client";
 import { WebSpeechEngine } from "@/lib/stt/web-speech-engine";
+import { ServerSttEngine } from "@/lib/stt/server-stt-engine";
 import type { SttStatus } from "@/lib/stt/web-speech-engine";
 import { MicrophoneCapture } from "@/lib/audio/microphone";
 import { ChromeTranslator } from "@/lib/translation/translator";
@@ -74,6 +75,9 @@ function RoomPageContent() {
 
   const roomClientRef = useRef<RoomClient | null>(null);
   const sttEngineRef = useRef<WebSpeechEngine | null>(null);
+  const serverSttRef = useRef<ServerSttEngine | null>(null);
+  const sttFallbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasProducedTranscript = useRef(false);
   const micRef = useRef<MicrophoneCapture | null>(null);
   const translatorRef = useRef<Translator | null>(null);
   const translatorLangPairRef = useRef<string>("");
@@ -252,40 +256,29 @@ function RoomPageContent() {
   }, [partner?.lang, myLang]);
 
   // --- Actions ---
-  const toggleListening = useCallback(async () => {
-    if (isListening) {
-      sttEngineRef.current?.stop();
-      micRef.current?.stop();
-      setMicStream(null);
-      setIsListening(false);
-      return;
-    }
+  const handleSttSegment = useCallback(
+    (segment: TranscriptSegment) => {
+      hasProducedTranscript.current = true;
+      if (sttFallbackTimer.current) {
+        clearTimeout(sttFallbackTimer.current);
+        sttFallbackTimer.current = null;
+      }
+      if (segment.isFinal) {
+        addMyTranscript(segment);
+        roomClientRef.current?.sendTranscript(segment);
+      } else {
+        updateInterimTranscript(segment);
+      }
+    },
+    [addMyTranscript, updateInterimTranscript],
+  );
 
-    const caps = detectCapabilities();
-    if (!caps.webSpeechApi) {
-      setSttError("Web Speech API is not supported. Please use Chrome or Safari.");
-      return;
-    }
-
-    try {
-      const mic = new MicrophoneCapture();
-      const stream = await mic.start();
-      micRef.current = mic;
-      setMicStream(stream);
-
-      setSttError("");
-      setSttStatus("starting");
-      const stt = new WebSpeechEngine(
+  const startServerStt = useCallback(
+    (stream: MediaStream) => {
+      const serverStt = new ServerSttEngine(
         userId,
         userName,
-        (segment: TranscriptSegment) => {
-          if (segment.isFinal) {
-            addMyTranscript(segment);
-            roomClientRef.current?.sendTranscript(segment);
-          } else {
-            updateInterimTranscript(segment);
-          }
-        },
+        handleSttSegment,
         (error: string) => {
           setSttError(error);
           setIsListening(false);
@@ -294,13 +287,75 @@ function RoomPageContent() {
         },
         (status: SttStatus) => setSttStatus(status),
       );
-      stt.start(LANG_SPEECH_CODES[myLang]);
-      sttEngineRef.current = stt;
-      setIsListening(true);
+      serverStt.start(LANG_SPEECH_CODES[myLang], stream);
+      serverSttRef.current = serverStt;
+    },
+    [userId, userName, myLang, setIsListening, handleSttSegment],
+  );
+
+  const toggleListening = useCallback(async () => {
+    if (isListening) {
+      sttEngineRef.current?.stop();
+      serverSttRef.current?.stop();
+      if (sttFallbackTimer.current) {
+        clearTimeout(sttFallbackTimer.current);
+        sttFallbackTimer.current = null;
+      }
+      micRef.current?.stop();
+      setMicStream(null);
+      setIsListening(false);
+      return;
+    }
+
+    try {
+      const mic = new MicrophoneCapture();
+      const stream = await mic.start();
+      micRef.current = mic;
+      setMicStream(stream);
+      setSttError("");
+      hasProducedTranscript.current = false;
+
+      const caps = detectCapabilities();
+
+      if (caps.webSpeechApi) {
+        setSttStatus("starting");
+        const stt = new WebSpeechEngine(
+          userId,
+          userName,
+          handleSttSegment,
+          (error: string) => {
+            setSttError(error);
+            setIsListening(false);
+            micRef.current?.stop();
+            setMicStream(null);
+          },
+          (status: SttStatus) => setSttStatus(status),
+        );
+        stt.start(LANG_SPEECH_CODES[myLang]);
+        sttEngineRef.current = stt;
+        setIsListening(true);
+
+        // Auto-fallback: if no transcript after 10s, switch to server STT
+        sttFallbackTimer.current = setTimeout(() => {
+          if (!hasProducedTranscript.current && micRef.current?.getStream()) {
+            console.warn("Web Speech API produced no results, switching to server STT");
+            sttEngineRef.current?.stop();
+            sttEngineRef.current = null;
+            const currentStream = micRef.current.getStream();
+            if (currentStream) {
+              startServerStt(currentStream);
+            }
+          }
+        }, 10000);
+      } else {
+        // No Web Speech API — go directly to server STT
+        startServerStt(stream);
+        setIsListening(true);
+      }
     } catch {
       setSttError("Could not access microphone. Please allow microphone permissions.");
     }
-  }, [isListening, userId, userName, myLang, setIsListening, addMyTranscript, updateInterimTranscript]);
+  }, [isListening, userId, userName, myLang, setIsListening, handleSttSegment, startServerStt]);
 
   const handleLangChange = useCallback(
     (lang: SupportedLang) => {
@@ -308,6 +363,7 @@ function RoomPageContent() {
       roomClientRef.current?.sendLanguageSet(userId, lang);
       if (isListening) {
         sttEngineRef.current?.setLang(LANG_SPEECH_CODES[lang]);
+        serverSttRef.current?.setLang(LANG_SPEECH_CODES[lang]);
       }
     },
     [userId, isListening, setMyLang],
