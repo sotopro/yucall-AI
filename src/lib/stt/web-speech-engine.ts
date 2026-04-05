@@ -13,6 +13,7 @@ interface SpeechRecognitionInstance {
   onspeechend: (() => void) | null;
   start(): void;
   stop(): void;
+  abort(): void;
 }
 
 declare global {
@@ -23,8 +24,13 @@ declare global {
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
-const MAX_RESTARTS = 10;
-const RESTART_COOLDOWN_MS = 1000;
+/** Max consecutive rapid restarts before giving up */
+const MAX_RESTARTS = 5;
+/** Restarts within this window count as "rapid" */
+const RESTART_COOLDOWN_MS = 2000;
+/** Base delay before restart — doubles on each consecutive failure */
+const BASE_RESTART_DELAY_MS = 300;
+const MAX_RESTART_DELAY_MS = 5000;
 
 export type SttStatus =
   | "starting"
@@ -43,6 +49,7 @@ export class WebSpeechEngine {
   private segmentCounter = 0;
   private restartCount = 0;
   private lastRestartTime = 0;
+  private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private onSegment: (segment: TranscriptSegment) => void;
   private onError: ((error: string) => void) | null = null;
   private onStatusChange: ((status: SttStatus) => void) | null = null;
@@ -74,33 +81,58 @@ export class WebSpeechEngine {
     }
 
     this.lang = lang;
+    this.isRunning = true;
+    this.restartCount = 0;
     this.onStatusChange?.("starting");
-    this.recognition = new SpeechRecognitionClass();
-    this.recognition.continuous = true;
-    this.recognition.interimResults = true;
-    this.recognition.lang = lang;
+    this.createAndStart(SpeechRecognitionClass);
+  }
 
-    this.recognition.onaudiostart = () => {
+  private createAndStart(
+    Ctor?: new () => SpeechRecognitionInstance,
+  ): void {
+    const SpeechRecognitionClass =
+      Ctor || window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognitionClass) return;
+
+    // Tear down previous instance completely
+    if (this.recognition) {
+      this.recognition.onresult = null;
+      this.recognition.onerror = null;
+      this.recognition.onend = null;
+      this.recognition.onaudiostart = null;
+      this.recognition.onspeechstart = null;
+      this.recognition.onspeechend = null;
+      this.recognition = null;
+    }
+
+    const recognition = new SpeechRecognitionClass();
+    this.recognition = recognition;
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = this.lang;
+
+    recognition.onaudiostart = () => {
+      // Successfully started — reset restart counter
+      this.restartCount = 0;
       this.onStatusChange?.("listening");
     };
 
-    this.recognition.onspeechstart = () => {
+    recognition.onspeechstart = () => {
       this.onStatusChange?.("speech-detected");
     };
 
-    this.recognition.onspeechend = () => {
+    recognition.onspeechend = () => {
       this.onStatusChange?.("processing");
     };
 
-    this.recognition.onresult = (event: {
+    recognition.onresult = (event: {
       resultIndex: number;
       results: {
         length: number;
         [i: number]: { isFinal: boolean; 0: { transcript: string } };
       };
     }) => {
-      this.restartCount = 0;
-
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
         this.segmentCounter++;
@@ -117,9 +149,7 @@ export class WebSpeechEngine {
       }
     };
 
-    this.recognition.onerror = (event: { error: string }) => {
-      console.error("Speech recognition error:", event.error);
-
+    recognition.onerror = (event: { error: string }) => {
       // no-speech is normal — just means silence was detected
       if (event.error === "no-speech") {
         this.onStatusChange?.("listening");
@@ -132,6 +162,7 @@ export class WebSpeechEngine {
         event.error === "service-not-available" ||
         event.error === "language-not-supported"
       ) {
+        console.error("Speech recognition fatal error:", event.error);
         this.isRunning = false;
         this.onStatusChange?.("error");
         this.onError?.(
@@ -139,25 +170,16 @@ export class WebSpeechEngine {
             ? "Microphone access denied. Please allow microphone permissions."
             : event.error === "service-not-available"
               ? "Speech recognition service unavailable. Check your internet connection."
-              : `Language "${lang}" is not supported for speech recognition.`,
+              : `Language "${this.lang}" is not supported for speech recognition.`,
         );
         return;
       }
 
-      // Network and other errors — report but allow restart
-      if (event.error === "network") {
-        this.onError?.(
-          "Network error in speech recognition. Check your internet connection.",
-        );
-        this.onStatusChange?.("error");
-        return;
-      }
-
-      // aborted, audio-capture, etc
-      this.onStatusChange?.("error");
+      // Network/aborted errors are transient — onend will handle restart
+      // Don't log every occurrence to avoid console spam
     };
 
-    this.recognition.onend = () => {
+    recognition.onend = () => {
       if (!this.isRunning) {
         this.onStatusChange?.("stopped");
         return;
@@ -172,6 +194,9 @@ export class WebSpeechEngine {
       this.lastRestartTime = now;
 
       if (this.restartCount >= MAX_RESTARTS) {
+        console.warn(
+          `Speech recognition stopped after ${MAX_RESTARTS} rapid restarts`,
+        );
         this.isRunning = false;
         this.onStatusChange?.("error");
         this.onError?.(
@@ -180,22 +205,33 @@ export class WebSpeechEngine {
         return;
       }
 
+      // Exponential backoff: 300ms, 600ms, 1200ms, 2400ms, 5000ms
+      const delay = Math.min(
+        BASE_RESTART_DELAY_MS * Math.pow(2, this.restartCount),
+        MAX_RESTART_DELAY_MS,
+      );
+
       this.onStatusChange?.("starting");
-      try {
-        this.recognition?.start();
-      } catch (e) {
-        console.error("Failed to restart recognition:", e);
-        this.isRunning = false;
-        this.onStatusChange?.("error");
-        this.onError?.("Failed to restart speech recognition.");
-      }
+      this.restartTimer = setTimeout(() => {
+        this.restartTimer = null;
+        if (!this.isRunning) return;
+        try {
+          // Create a fresh instance to avoid stale state
+          this.createAndStart();
+        } catch (e) {
+          console.error("Failed to restart recognition:", e);
+          this.isRunning = false;
+          this.onStatusChange?.("error");
+          this.onError?.("Failed to restart speech recognition.");
+        }
+      }, delay);
     };
 
     try {
-      this.recognition.start();
-      this.isRunning = true;
+      recognition.start();
     } catch (e) {
       console.error("Failed to start recognition:", e);
+      this.isRunning = false;
       this.onStatusChange?.("error");
       this.onError?.("Failed to start speech recognition.");
     }
@@ -203,8 +239,19 @@ export class WebSpeechEngine {
 
   stop(): void {
     this.isRunning = false;
-    this.recognition?.stop();
-    this.recognition = null;
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+    if (this.recognition) {
+      this.recognition.onend = null; // prevent restart on intentional stop
+      try {
+        this.recognition.abort();
+      } catch {
+        // already stopped
+      }
+      this.recognition = null;
+    }
     this.onStatusChange?.("stopped");
   }
 

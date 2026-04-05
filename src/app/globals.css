@@ -128,3 +128,36 @@
     @apply font-sans;
   }
 }
+
+/* Message animations */
+@keyframes message-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-message-in {
+  animation: message-in 0.3s ease-out both;
+}
+
+@keyframes typewriter-cursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.typewriter-cursor::after {
+  content: "\25AE";
+  display: inline;
+  margin-left: 1px;
+  animation: typewriter-cursor 0.8s step-end infinite;
+  color: oklch(0.556 0 0);
+}
+
+.dark .typewriter-cursor::after {
+  color: oklch(0.708 0 0);
+}

@@ -15,7 +15,25 @@ export class RoomClient {
 
   connect(): void {
     this._isConnected = true;
-    this.lastTimestamp = Date.now();
+    // Don't set lastTimestamp here — first poll will use 0 and the
+    // server response will give us the correct server timestamp
+    this.lastTimestamp = 0;
+    this.syncTimestamp();
+  }
+
+  /** Fetch the server timestamp without processing old messages */
+  private async syncTimestamp(): Promise<void> {
+    try {
+      const res = await fetch(
+        `/api/ws?room=${encodeURIComponent(this.roomId)}&since=${Date.now()}`,
+      );
+      if (res.ok) {
+        const data = await res.json();
+        this.lastTimestamp = data.timestamp;
+      }
+    } catch {
+      // Fall through — first poll will pick up from 0
+    }
     this.startPolling();
   }
 

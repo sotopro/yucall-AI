@@ -11,6 +11,8 @@ self.onmessage = async (event) => {
       try {
         const { pipeline, env } = await import("@huggingface/transformers");
         env.allowLocalModels = false;
+        // Force WASM backend to avoid WebGPU/WebNN quantization issues
+        env.backends.onnx.wasm.proxy = false;
 
         const { model, label } = data;
 
@@ -21,6 +23,8 @@ self.onmessage = async (event) => {
         });
 
         const translator = await pipeline("translation", model, {
+          device: "wasm",
+          dtype: "fp32",
           progress_callback: (progress) => {
             if (progress.status === "progress" && progress.progress != null) {
               const pct = Math.round(progress.progress);

@@ -24,11 +24,19 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const key = `room:${roomId}:messages`;
-    const entry = JSON.stringify({ ...body, _ts: Date.now() });
+    const ts = Date.now();
+    const entry = JSON.stringify({ ...body, _ts: ts });
 
     const redis = getRedis();
-    await redis.lpush(key, entry);
+    // Use sorted set with timestamp as score for reliable range queries
+    await redis.zadd(key, { score: ts, member: entry });
     await redis.expire(key, MESSAGE_TTL);
+
+    // Trim old messages (keep last 200)
+    const count = await redis.zcard(key);
+    if (count > 200) {
+      await redis.zremrangebyrank(key, 0, count - 201);
+    }
 
     return NextResponse.json({ ok: true });
   } catch (e) {
@@ -54,7 +62,14 @@ export async function GET(request: NextRequest) {
 
   try {
     const key = `room:${roomId}:messages`;
-    const raw = await getRedis().lrange(key, 0, 49);
+
+    // Capture timestamp BEFORE reading Redis to avoid missing messages
+    const timestamp = Date.now();
+
+    // Fetch messages with score > since (exclusive) using sorted set
+    const raw = await getRedis().zrange(key, `(${since}`, "+inf", {
+      byScore: true,
+    });
 
     const messages = (Array.isArray(raw) ? raw : [])
       .map((entry) => {
@@ -67,10 +82,9 @@ export async function GET(request: NextRequest) {
         }
         return entry;
       })
-      .filter((m) => m && m._ts > since)
-      .reverse(); // oldest first
+      .filter((m) => m != null);
 
-    return NextResponse.json({ messages, timestamp: Date.now() });
+    return NextResponse.json({ messages, timestamp });
   } catch (e) {
     console.error("GET /api/ws error:", e);
     return NextResponse.json(

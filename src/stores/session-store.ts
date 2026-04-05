@@ -76,9 +76,10 @@ export const useSessionStore = create<SessionState>((set) => ({
     })),
 
   addTranslation: (segment) =>
-    set((state) => ({
-      translations: [...state.translations, segment],
-    })),
+    set((state) => {
+      if (state.translations.some((t) => t.id === segment.id)) return state;
+      return { translations: [...state.translations, segment] };
+    }),
 
   updateInterimTranscript: (segment) =>
     set((state) => {
