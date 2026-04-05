@@ -8,6 +8,9 @@ interface SpeechRecognitionInstance {
   onresult: ((event: any) => void) | null;
   onerror: ((event: any) => void) | null;
   onend: (() => void) | null;
+  onaudiostart: (() => void) | null;
+  onspeechstart: (() => void) | null;
+  onspeechend: (() => void) | null;
   start(): void;
   stop(): void;
 }
@@ -23,6 +26,14 @@ declare global {
 const MAX_RESTARTS = 10;
 const RESTART_COOLDOWN_MS = 1000;
 
+export type SttStatus =
+  | "starting"
+  | "listening"
+  | "speech-detected"
+  | "processing"
+  | "error"
+  | "stopped";
+
 export class WebSpeechEngine {
   private recognition: SpeechRecognitionInstance | null = null;
   private isRunning = false;
@@ -34,17 +45,20 @@ export class WebSpeechEngine {
   private lastRestartTime = 0;
   private onSegment: (segment: TranscriptSegment) => void;
   private onError: ((error: string) => void) | null = null;
+  private onStatusChange: ((status: SttStatus) => void) | null = null;
 
   constructor(
     userId: string,
     userName: string,
     onSegment: (segment: TranscriptSegment) => void,
     onError?: (error: string) => void,
+    onStatusChange?: (status: SttStatus) => void,
   ) {
     this.userId = userId;
     this.userName = userName;
     this.onSegment = onSegment;
     this.onError = onError || null;
+    this.onStatusChange = onStatusChange || null;
   }
 
   start(lang: string): void {
@@ -55,14 +69,28 @@ export class WebSpeechEngine {
 
     if (!SpeechRecognitionClass) {
       this.onError?.("Web Speech API not supported in this browser");
+      this.onStatusChange?.("error");
       return;
     }
 
     this.lang = lang;
+    this.onStatusChange?.("starting");
     this.recognition = new SpeechRecognitionClass();
     this.recognition.continuous = true;
     this.recognition.interimResults = true;
     this.recognition.lang = lang;
+
+    this.recognition.onaudiostart = () => {
+      this.onStatusChange?.("listening");
+    };
+
+    this.recognition.onspeechstart = () => {
+      this.onStatusChange?.("speech-detected");
+    };
+
+    this.recognition.onspeechend = () => {
+      this.onStatusChange?.("processing");
+    };
 
     this.recognition.onresult = (event: {
       resultIndex: number;
@@ -71,7 +99,6 @@ export class WebSpeechEngine {
         [i: number]: { isFinal: boolean; 0: { transcript: string } };
       };
     }) => {
-      // Reset restart counter on successful results
       this.restartCount = 0;
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -91,16 +118,22 @@ export class WebSpeechEngine {
     };
 
     this.recognition.onerror = (event: { error: string }) => {
-      if (event.error === "no-speech") return;
-
       console.error("Speech recognition error:", event.error);
 
+      // no-speech is normal — just means silence was detected
+      if (event.error === "no-speech") {
+        this.onStatusChange?.("listening");
+        return;
+      }
+
+      // Fatal errors — stop and notify user
       if (
         event.error === "not-allowed" ||
         event.error === "service-not-available" ||
         event.error === "language-not-supported"
       ) {
         this.isRunning = false;
+        this.onStatusChange?.("error");
         this.onError?.(
           event.error === "not-allowed"
             ? "Microphone access denied. Please allow microphone permissions."
@@ -108,11 +141,27 @@ export class WebSpeechEngine {
               ? "Speech recognition service unavailable. Check your internet connection."
               : `Language "${lang}" is not supported for speech recognition.`,
         );
+        return;
       }
+
+      // Network and other errors — report but allow restart
+      if (event.error === "network") {
+        this.onError?.(
+          "Network error in speech recognition. Check your internet connection.",
+        );
+        this.onStatusChange?.("error");
+        return;
+      }
+
+      // aborted, audio-capture, etc
+      this.onStatusChange?.("error");
     };
 
     this.recognition.onend = () => {
-      if (!this.isRunning) return;
+      if (!this.isRunning) {
+        this.onStatusChange?.("stopped");
+        return;
+      }
 
       const now = Date.now();
       if (now - this.lastRestartTime < RESTART_COOLDOWN_MS) {
@@ -124,17 +173,20 @@ export class WebSpeechEngine {
 
       if (this.restartCount >= MAX_RESTARTS) {
         this.isRunning = false;
+        this.onStatusChange?.("error");
         this.onError?.(
           "Speech recognition keeps stopping. Try refreshing the page.",
         );
         return;
       }
 
+      this.onStatusChange?.("starting");
       try {
         this.recognition?.start();
       } catch (e) {
         console.error("Failed to restart recognition:", e);
         this.isRunning = false;
+        this.onStatusChange?.("error");
         this.onError?.("Failed to restart speech recognition.");
       }
     };
@@ -144,6 +196,7 @@ export class WebSpeechEngine {
       this.isRunning = true;
     } catch (e) {
       console.error("Failed to start recognition:", e);
+      this.onStatusChange?.("error");
       this.onError?.("Failed to start speech recognition.");
     }
   }
@@ -152,6 +205,7 @@ export class WebSpeechEngine {
     this.isRunning = false;
     this.recognition?.stop();
     this.recognition = null;
+    this.onStatusChange?.("stopped");
   }
 
   setLang(lang: string): void {

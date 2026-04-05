@@ -16,6 +16,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { useSessionStore } from "@/stores/session-store";
 import { RoomClient } from "@/lib/sync/room-client";
 import { WebSpeechEngine } from "@/lib/stt/web-speech-engine";
+import type { SttStatus } from "@/lib/stt/web-speech-engine";
 import { MicrophoneCapture } from "@/lib/audio/microphone";
 import {
   ChromeTranslator,
@@ -73,6 +74,7 @@ export default function RoomPage() {
   const [translatorStatus, setTranslatorStatus] = useState<string>("");
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const [sttError, setSttError] = useState<string>("");
+  const [sttStatus, setSttStatus] = useState<SttStatus>("stopped");
 
   // Initialize room connection
   useEffect(() => {
@@ -271,6 +273,7 @@ export default function RoomPage() {
       setMicStream(stream);
 
       setSttError("");
+      setSttStatus("starting");
       const stt = new WebSpeechEngine(
         userId,
         userName,
@@ -287,6 +290,9 @@ export default function RoomPage() {
           setIsListening(false);
           micRef.current?.stop();
           setMicStream(null);
+        },
+        (status: SttStatus) => {
+          setSttStatus(status);
         },
       );
       stt.start(LANG_SPEECH_CODES[myLang]);
@@ -465,6 +471,15 @@ export default function RoomPage() {
                 className={`w-2 h-2 rounded-full flex-shrink-0 ${isListening ? "bg-green-500 animate-pulse" : "bg-gray-400"}`}
               />
               My Speech ({LANGUAGES[myLang]})
+              {isListening && (
+                <Badge variant="outline" className="text-[10px] ml-1">
+                  {sttStatus === "starting" && "Starting..."}
+                  {sttStatus === "listening" && "Waiting for speech"}
+                  {sttStatus === "speech-detected" && "Hearing you..."}
+                  {sttStatus === "processing" && "Processing..."}
+                  {sttStatus === "error" && "Error"}
+                </Badge>
+              )}
             </CardTitle>
           </CardHeader>
           <Separator />
