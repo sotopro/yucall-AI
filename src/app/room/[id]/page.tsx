@@ -222,12 +222,12 @@ function RoomPageContent() {
       }
 
       try {
-        setTranslatorStatus("Loading local translation model...");
+        setTranslatorStatus("Loading translation model...");
         const translator = new TransformersTranslator(
           partner!.lang,
           myLang,
-          (loaded, total) => {
-            setTranslatorStatus(`Downloading model ${loaded}/${total}...`);
+          (status) => {
+            setTranslatorStatus(status);
           },
         );
         await translator.init();
@@ -236,7 +236,9 @@ function RoomPageContent() {
       } catch (e) {
         console.error("Transformers.js failed:", e);
         translatorRef.current = new FallbackTranslator();
-        setTranslatorStatus("Translation unavailable");
+        setTranslatorStatus(
+          "Translation unavailable — showing original text",
+        );
       }
     }
 
