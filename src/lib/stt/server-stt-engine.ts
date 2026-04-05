@@ -2,7 +2,9 @@ import type { TranscriptSegment } from "@/types";
 import type { SttStatus } from "./web-speech-engine";
 
 /** Duration in ms for each recording chunk */
-const CHUNK_DURATION_MS = 3500;
+const CHUNK_DURATION_MS = 4000;
+/** Minimum blob size in bytes to send (below this is likely silence/corrupt) */
+const MIN_BLOB_SIZE = 4000;
 
 export class ServerSttEngine {
   private isRunning = false;
@@ -69,7 +71,7 @@ export class ServerSttEngine {
         if (!this.isRunning) break;
 
         // Skip tiny blobs (mostly silence)
-        if (blob && blob.size > 1000) {
+        if (blob && blob.size > MIN_BLOB_SIZE) {
           this.onStatusChange?.("processing");
           await this.transcribe(blob);
         }
