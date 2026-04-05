@@ -11,6 +11,8 @@ self.onmessage = async (event) => {
       try {
         const { pipeline, env } = await import("@huggingface/transformers");
         env.allowLocalModels = false;
+        // Use HuggingFace mirror for users in China (huggingface.co is blocked)
+        env.remoteHost = "https://hf-mirror.com";
         // Force WASM backend to avoid WebGPU/WebNN quantization issues
         env.backends.onnx.wasm.proxy = false;
 
