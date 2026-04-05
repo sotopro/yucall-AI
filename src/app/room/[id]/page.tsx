@@ -80,6 +80,7 @@ function RoomPageContent() {
   const partnerScrollRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
   const [translatorStatus, setTranslatorStatus] = useState<string>("");
+  const [isLoadingModel, setIsLoadingModel] = useState(false);
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const [sttError, setSttError] = useState<string>("");
   const [sttStatus, setSttStatus] = useState<SttStatus>("stopped");
@@ -198,6 +199,8 @@ function RoomPageContent() {
     const caps = detectCapabilities();
 
     async function initTranslator() {
+      setIsLoadingModel(true);
+
       if (caps.chromeTranslatorApi) {
         try {
           setTranslatorStatus("Loading translation model...");
@@ -206,12 +209,13 @@ function RoomPageContent() {
             myLang,
             (loaded, total) => {
               const pct = Math.round((loaded / total) * 100);
-              setTranslatorStatus(`Downloading: ${pct}%`);
+              setTranslatorStatus(`Downloading translation model: ${pct}%`);
             },
           );
           await translator.init();
           translatorRef.current = translator;
           setTranslatorStatus("Ready");
+          setIsLoadingModel(false);
           return;
         } catch (e) {
           console.warn(
@@ -222,7 +226,7 @@ function RoomPageContent() {
       }
 
       try {
-        setTranslatorStatus("Loading translation model...");
+        setTranslatorStatus("Downloading translation model...");
         const translator = new TransformersTranslator(
           partner!.lang,
           myLang,
@@ -240,6 +244,8 @@ function RoomPageContent() {
           "Translation unavailable — showing original text",
         );
       }
+
+      setIsLoadingModel(false);
     }
 
     initTranslator();
@@ -427,14 +433,6 @@ function RoomPageContent() {
               </option>
             ))}
           </select>
-          {translatorStatus && (
-            <Badge
-              variant={translatorStatus === "Ready" ? "default" : "outline"}
-              className="text-xs"
-            >
-              {translatorStatus}
-            </Badge>
-          )}
         </div>
         <div className="flex items-center gap-2 w-full sm:w-auto">
           <Button
@@ -463,6 +461,24 @@ function RoomPageContent() {
           </Button>
         </div>
       </div>
+
+      {/* Loading overlay - blocks UI while downloading model */}
+      {isLoadingModel && (
+        <div className="fixed inset-0 z-50 bg-background/90 flex items-center justify-center">
+          <div className="text-center space-y-4 px-6 max-w-sm">
+            <div className="w-12 h-12 border-4 border-muted border-t-foreground rounded-full animate-spin mx-auto" />
+            <p className="text-lg font-semibold">
+              Downloading translation model
+            </p>
+            <p className="text-sm text-muted-foreground">
+              {translatorStatus}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              This only happens once. The model will be cached for future use.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Audio visualizer */}
       {isListening && (
