@@ -156,10 +156,13 @@ function RoomPageContent() {
             const { userId: joinedId, userName: joinedName } =
               message.payload as UserPayload;
             if (joinedId !== userId) {
+              // Preserve existing lang to avoid race condition where
+              // user-joined arrives after language-set and resets lang to ""
+              const current = useSessionStore.getState().partner;
               setPartner({
                 userId: joinedId,
                 userName: joinedName,
-                lang: "",
+                lang: current?.userId === joinedId ? current.lang : "",
                 isConnected: true,
               });
               // Only re-announce once per partner to avoid infinite loop
@@ -175,9 +178,11 @@ function RoomPageContent() {
             const { userId: langUserId, lang } =
               message.payload as LanguagePayload;
             if (langUserId !== userId) {
+              // Read latest state to avoid stale closure for partner.userName
+              const current = useSessionStore.getState().partner;
               setPartner({
                 userId: langUserId,
-                userName: partner?.userName || "Partner",
+                userName: current?.userName || "Partner",
                 lang,
                 isConnected: true,
               });
@@ -190,7 +195,7 @@ function RoomPageContent() {
 
     return unsub;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId, myLang, partner?.userName, handleTranslate]);
+  }, [userId, myLang, handleTranslate]);
 
   // --- Translator init ---
   useEffect(() => {
