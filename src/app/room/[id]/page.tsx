@@ -10,7 +10,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { AudioVisualizer } from "@/components/audio-visualizer";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -18,7 +17,10 @@ import { useSessionStore } from "@/stores/session-store";
 import { RoomClient } from "@/lib/sync/room-client";
 import { WebSpeechEngine } from "@/lib/stt/web-speech-engine";
 import { MicrophoneCapture } from "@/lib/audio/microphone";
-import { ChromeTranslator, FallbackTranslator } from "@/lib/translation/translator";
+import {
+  ChromeTranslator,
+  FallbackTranslator,
+} from "@/lib/translation/translator";
 import { TransformersTranslator } from "@/lib/translation/transformers-translator";
 import { detectCapabilities } from "@/lib/utils/capability-detect";
 import type {
@@ -82,8 +84,11 @@ export default function RoomPage() {
     client.connect();
     setIsConnected(true);
 
-    client.sendUserJoined(userId, nameFromUrl);
-    client.sendLanguageSet(userId, myLang);
+    // Small delay to ensure connect() sets lastTimestamp before sending
+    setTimeout(() => {
+      client.sendUserJoined(userId, nameFromUrl);
+      client.sendLanguageSet(userId, myLang);
+    }, 100);
 
     return () => {
       client.disconnect();
@@ -112,9 +117,13 @@ export default function RoomPage() {
 
     const unsub = roomClientRef.current.onMessage(
       async (message: RoomMessage) => {
+        if (!message || !message.type) return;
+
         switch (message.type) {
           case "transcript": {
-            const { segment } = message.payload as TranscriptPayload;
+            const payload = message.payload as TranscriptPayload;
+            if (!payload?.segment) return;
+            const { segment } = payload;
             if (segment.userId === userId) return;
 
             if (segment.isFinal) {
@@ -145,6 +154,7 @@ export default function RoomPage() {
                 lang: "",
                 isConnected: true,
               });
+              // Re-announce ourselves so new partner knows we're here
               roomClientRef.current?.sendUserJoined(userId, userName);
               roomClientRef.current?.sendLanguageSet(userId, myLang);
             }
@@ -178,7 +188,6 @@ export default function RoomPage() {
     const caps = detectCapabilities();
 
     async function initTranslator() {
-      // Try Chrome Translator API first
       if (caps.chromeTranslatorApi) {
         try {
           setTranslatorStatus("Loading translation model...");
@@ -195,11 +204,13 @@ export default function RoomPage() {
           setTranslatorStatus("Ready");
           return;
         } catch (e) {
-          console.warn("Chrome Translator failed, falling back to Transformers.js:", e);
+          console.warn(
+            "Chrome Translator failed, falling back to Transformers.js:",
+            e,
+          );
         }
       }
 
-      // Fallback to Transformers.js (Safari + Chrome fallback)
       try {
         setTranslatorStatus("Loading local translation model...");
         const translator = new TransformersTranslator(
@@ -224,11 +235,16 @@ export default function RoomPage() {
 
   // Auto-scroll
   useEffect(() => {
-    myScrollRef.current?.scrollTo({ top: myScrollRef.current.scrollHeight, behavior: "smooth" });
+    if (myScrollRef.current) {
+      myScrollRef.current.scrollTop = myScrollRef.current.scrollHeight;
+    }
   }, [myTranscripts]);
 
   useEffect(() => {
-    partnerScrollRef.current?.scrollTo({ top: partnerScrollRef.current.scrollHeight, behavior: "smooth" });
+    if (partnerScrollRef.current) {
+      partnerScrollRef.current.scrollTop =
+        partnerScrollRef.current.scrollHeight;
+    }
   }, [translations, partnerTranscripts]);
 
   const toggleListening = async () => {
@@ -242,7 +258,9 @@ export default function RoomPage() {
 
     const caps = detectCapabilities();
     if (!caps.webSpeechApi) {
-      alert("Web Speech API is not supported in this browser. Please use Chrome or Safari.");
+      setSttError(
+        "Web Speech API is not supported in this browser. Please use Chrome or Safari.",
+      );
       return;
     }
 
@@ -276,7 +294,9 @@ export default function RoomPage() {
       setIsListening(true);
     } catch (e) {
       console.error("Failed to start microphone:", e);
-      alert("Could not access microphone. Please allow microphone permissions.");
+      setSttError(
+        "Could not access microphone. Please allow microphone permissions.",
+      );
     }
   };
 
@@ -304,12 +324,14 @@ export default function RoomPage() {
     lines.push("");
 
     const allEntries = [
-      ...myTranscripts.filter((s) => s.isFinal).map((s) => ({
-        time: s.timestamp,
-        name: s.userName,
-        text: s.text,
-        type: "original" as const,
-      })),
+      ...myTranscripts
+        .filter((s) => s.isFinal)
+        .map((s) => ({
+          time: s.timestamp,
+          name: s.userName,
+          text: s.text,
+          type: "original" as const,
+        })),
       ...translations.map((s) => ({
         time: s.timestamp,
         name: s.userName,
@@ -358,7 +380,10 @@ export default function RoomPage() {
             {isConnected ? "Connected" : "Offline"}
           </Badge>
           {partner && (
-            <Badge variant="secondary" className="text-xs hidden sm:inline-flex">
+            <Badge
+              variant="secondary"
+              className="text-xs hidden sm:inline-flex"
+            >
               {partner.userName}
               {partner.lang
                 ? ` (${LANGUAGES[partner.lang as SupportedLang] || partner.lang})`
@@ -431,9 +456,9 @@ export default function RoomPage() {
       )}
 
       {/* Main content - two panels */}
-      <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-0 min-h-0 overflow-hidden">
+      <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
         {/* My transcription panel */}
-        <Card className="rounded-none border-0 md:border-r flex flex-col min-h-0 border-b md:border-b-0">
+        <Card className="rounded-none border-0 md:border-r flex flex-col flex-1 min-h-0 border-b md:border-b-0">
           <CardHeader className="py-2 px-3 sm:px-4 flex-shrink-0">
             <CardTitle className="text-xs sm:text-sm flex items-center gap-2">
               <span
@@ -443,36 +468,34 @@ export default function RoomPage() {
             </CardTitle>
           </CardHeader>
           <Separator />
-          <CardContent className="flex-1 p-0 min-h-0 overflow-hidden">
-            <ScrollArea className="h-full">
-              <div ref={myScrollRef} className="p-3 sm:p-4 space-y-2">
-                {sttError && (
-                  <p className="text-red-500 text-sm text-center py-4 px-2">
-                    {sttError}
-                  </p>
-                )}
-                {myTranscripts.length === 0 && !sttError && (
-                  <p className="text-muted-foreground text-sm text-center py-8">
-                    {isListening
-                      ? "Listening... Start speaking."
-                      : "Press Start to begin."}
-                  </p>
-                )}
-                {myTranscripts.map((seg) => (
-                  <p
-                    key={seg.id}
-                    className={`text-sm leading-relaxed ${seg.isFinal ? "text-foreground" : "text-muted-foreground italic"}`}
-                  >
-                    {seg.text}
-                  </p>
-                ))}
-              </div>
-            </ScrollArea>
+          <CardContent className="flex-1 p-0 min-h-0 overflow-y-auto">
+            <div ref={myScrollRef} className="p-3 sm:p-4 space-y-2">
+              {sttError && (
+                <p className="text-red-500 text-sm text-center py-4 px-2">
+                  {sttError}
+                </p>
+              )}
+              {myTranscripts.length === 0 && !sttError && (
+                <p className="text-muted-foreground text-sm text-center py-8">
+                  {isListening
+                    ? "Listening... Start speaking."
+                    : "Press Start to begin."}
+                </p>
+              )}
+              {myTranscripts.map((seg) => (
+                <p
+                  key={seg.id}
+                  className={`text-sm leading-relaxed ${seg.isFinal ? "text-foreground" : "text-muted-foreground italic"}`}
+                >
+                  {seg.text}
+                </p>
+              ))}
+            </div>
           </CardContent>
         </Card>
 
         {/* Partner translation panel */}
-        <Card className="rounded-none border-0 flex flex-col min-h-0">
+        <Card className="rounded-none border-0 flex flex-col flex-1 min-h-0">
           <CardHeader className="py-2 px-3 sm:px-4 flex-shrink-0">
             <CardTitle className="text-xs sm:text-sm flex items-center gap-2">
               <span
@@ -488,51 +511,49 @@ export default function RoomPage() {
             </CardTitle>
           </CardHeader>
           <Separator />
-          <CardContent className="flex-1 p-0 min-h-0 overflow-hidden">
-            <ScrollArea className="h-full">
-              <div ref={partnerScrollRef} className="p-3 sm:p-4 space-y-3">
-                {!partner && (
-                  <div className="text-center py-8 space-y-3">
-                    <p className="text-muted-foreground text-sm">
-                      Share the room code with your conversation partner:
+          <CardContent className="flex-1 p-0 min-h-0 overflow-y-auto">
+            <div ref={partnerScrollRef} className="p-3 sm:p-4 space-y-3">
+              {!partner && (
+                <div className="text-center py-8 space-y-3">
+                  <p className="text-muted-foreground text-sm">
+                    Share the room code with your conversation partner:
+                  </p>
+                  <p className="font-mono text-2xl font-bold tracking-widest">
+                    {roomId}
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={copyRoomLink}
+                    className="cursor-pointer"
+                  >
+                    {copied ? "Copied!" : "Copy link"}
+                  </Button>
+                </div>
+              )}
+              {translations.map((seg) => (
+                <div key={seg.id} className="space-y-1">
+                  <p className="text-sm leading-relaxed text-foreground">
+                    {seg.translatedText}
+                  </p>
+                  {seg.translatedText !== seg.originalText && (
+                    <p className="text-xs text-muted-foreground italic">
+                      {seg.originalText}
                     </p>
-                    <p className="font-mono text-2xl font-bold tracking-widest">
-                      {roomId}
-                    </p>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={copyRoomLink}
-                      className="cursor-pointer"
-                    >
-                      {copied ? "Copied!" : "Copy link"}
-                    </Button>
-                  </div>
-                )}
-                {translations.map((seg) => (
-                  <div key={seg.id} className="space-y-1">
-                    <p className="text-sm leading-relaxed text-foreground">
-                      {seg.translatedText}
-                    </p>
-                    {seg.translatedText !== seg.originalText && (
-                      <p className="text-xs text-muted-foreground italic">
-                        {seg.originalText}
-                      </p>
-                    )}
-                  </div>
+                  )}
+                </div>
+              ))}
+              {partnerTranscripts
+                .filter((s) => !s.isFinal)
+                .map((seg) => (
+                  <p
+                    key={seg.id}
+                    className="text-sm text-muted-foreground italic animate-pulse"
+                  >
+                    {seg.text}
+                  </p>
                 ))}
-                {partnerTranscripts
-                  .filter((s) => !s.isFinal)
-                  .map((seg) => (
-                    <p
-                      key={seg.id}
-                      className="text-sm text-muted-foreground italic animate-pulse"
-                    >
-                      {seg.text}
-                    </p>
-                  ))}
-              </div>
-            </ScrollArea>
+            </div>
           </CardContent>
         </Card>
       </div>
