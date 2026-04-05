@@ -21,14 +21,23 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const body = await request.json();
-  const key = `room:${roomId}:messages`;
-  const entry = JSON.stringify({ ...body, _ts: Date.now() });
+  try {
+    const body = await request.json();
+    const key = `room:${roomId}:messages`;
+    const entry = JSON.stringify({ ...body, _ts: Date.now() });
 
-  await getRedis().lpush(key, entry);
-  await getRedis().expire(key, MESSAGE_TTL);
+    const redis = getRedis();
+    await redis.lpush(key, entry);
+    await redis.expire(key, MESSAGE_TTL);
 
-  return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    console.error("POST /api/ws error:", e);
+    return NextResponse.json(
+      { error: "Internal server error", detail: String(e) },
+      { status: 500 },
+    );
+  }
 }
 
 // GET: Poll for messages since a given timestamp
@@ -43,16 +52,30 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const key = `room:${roomId}:messages`;
-  const raw = (await getRedis().lrange(key, 0, 49)) as string[];
+  try {
+    const key = `room:${roomId}:messages`;
+    const raw = await getRedis().lrange(key, 0, 49);
 
-  const messages = raw
-    .map((entry) => {
-      const parsed = typeof entry === "string" ? JSON.parse(entry) : entry;
-      return parsed;
-    })
-    .filter((m) => m._ts > since)
-    .reverse(); // oldest first
+    const messages = (Array.isArray(raw) ? raw : [])
+      .map((entry) => {
+        if (typeof entry === "string") {
+          try {
+            return JSON.parse(entry);
+          } catch {
+            return null;
+          }
+        }
+        return entry;
+      })
+      .filter((m) => m && m._ts > since)
+      .reverse(); // oldest first
 
-  return NextResponse.json({ messages, timestamp: Date.now() });
+    return NextResponse.json({ messages, timestamp: Date.now() });
+  } catch (e) {
+    console.error("GET /api/ws error:", e);
+    return NextResponse.json(
+      { error: "Internal server error", detail: String(e) },
+      { status: 500 },
+    );
+  }
 }
