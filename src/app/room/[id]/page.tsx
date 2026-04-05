@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback, useState } from "react";
+import { Suspense, useEffect, useRef, useCallback, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +37,14 @@ import { LANGUAGES, LANG_SPEECH_CODES } from "@/types";
 import type { Translator } from "@/lib/translation/translator";
 
 export default function RoomPage() {
+  return (
+    <Suspense fallback={<div className="flex-1 flex items-center justify-center h-dvh">Loading...</div>}>
+      <RoomPageContent />
+    </Suspense>
+  );
+}
+
+function RoomPageContent() {
   const params = useParams();
   const searchParams = useSearchParams();
   const roomId = params.id as string;
