@@ -3,17 +3,21 @@ import { NextRequest, NextResponse } from "next/server";
 const DEEPGRAM_API_URL = "https://api.deepgram.com/v1/listen";
 
 /** Minimum confidence to accept a transcript (filters hallucinations) */
-const MIN_CONFIDENCE = 0.65;
+const MIN_CONFIDENCE = 0.5;
 
 /** Minimum transcript length to accept (single chars are usually noise) */
 const MIN_TRANSCRIPT_LENGTH = 2;
 
-// Map internal lang codes to Deepgram codes
+// Languages that need Whisper (supports Cantonese, dialects, etc.)
+const WHISPER_LANGS = new Set(["zh", "zh-CN", "zh-HK"]);
+
+// Map internal lang codes to Deepgram base codes
 const LANG_MAP: Record<string, string> = {
   es: "es",
   en: "en",
   zh: "zh",
   "zh-CN": "zh",
+  "zh-HK": "zh",
   "es-ES": "es",
   "en-US": "en",
 };
@@ -29,6 +33,7 @@ export async function POST(req: NextRequest) {
 
   const lang = req.nextUrl.searchParams.get("lang") || "zh";
   const dgLang = LANG_MAP[lang] || lang;
+  const useWhisper = WHISPER_LANGS.has(lang) || WHISPER_LANGS.has(dgLang);
 
   try {
     const audioBuffer = await req.arrayBuffer();
@@ -40,15 +45,14 @@ export async function POST(req: NextRequest) {
     const contentType = req.headers.get("content-type") || "audio/webm";
 
     const params = new URLSearchParams({
-      model: "nova-3",
+      // Whisper for Chinese (handles Mandarin + Cantonese + dialects)
+      // Nova-3 for everything else (faster, but Mandarin only)
+      model: useWhisper ? "whisper-large" : "nova-3",
       punctuate: "true",
       smart_format: "true",
-      // Auto-detect language to catch echo (e.g., Spanish coming through
-      // speaker when we expect Chinese) — discard if wrong language
+      // Auto-detect language to catch echo from partner's speaker
       detect_language: "true",
-      // Detect actual speech utterances to avoid transcribing noise
       utterances: "true",
-      // End-of-speech detection — helps ignore trailing noise
       endpointing: "300",
     });
 
@@ -59,11 +63,10 @@ export async function POST(req: NextRequest) {
         "Content-Type": contentType,
       },
       body: audioBuffer,
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!res.ok) {
-      // 400 = corrupt/short audio, just return empty transcript
       if (res.status === 400) {
         return NextResponse.json({ transcript: "" });
       }
@@ -77,13 +80,22 @@ export async function POST(req: NextRequest) {
     const alt = channel?.alternatives?.[0];
     const transcript = alt?.transcript || "";
     const confidence = alt?.confidence ?? 0;
-    const detectedLang = channel?.detected_language || alt?.languages?.[0] || "";
+    const detectedLang =
+      channel?.detected_language ||
+      data.results?.channels?.[0]?.alternatives?.[0]?.languages?.[0] ||
+      "";
 
     // Filter: wrong language detected (echo from partner's speaker)
-    if (detectedLang && dgLang) {
-      const expected = dgLang.split("-")[0]; // "zh-CN" → "zh"
+    // For Chinese, accept zh, yue (Cantonese), wuu, nan, etc.
+    if (detectedLang) {
       const detected = detectedLang.split("-")[0];
-      if (detected !== expected) {
+      const isChinese = ["zh", "yue", "wuu", "nan", "hak", "cmn"].includes(detected);
+
+      if (useWhisper && !isChinese) {
+        // Expected Chinese but got something else → echo
+        return NextResponse.json({ transcript: "" });
+      }
+      if (!useWhisper && detected !== dgLang.split("-")[0]) {
         return NextResponse.json({ transcript: "" });
       }
     }
