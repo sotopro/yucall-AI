@@ -33,8 +33,8 @@ export class RoomClient {
         this.lastTimestamp = data.timestamp;
 
         for (const msg of data.messages) {
-          const { _timestamp, ...message } = msg;
-          void _timestamp;
+          const { _ts, ...message } = msg;
+          void _ts;
           this.handlers.forEach((handler) => handler(message as RoomMessage));
         }
       } catch {
