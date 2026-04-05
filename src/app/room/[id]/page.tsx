@@ -78,6 +78,9 @@ function RoomPageContent() {
   const sttEngineRef = useRef<WebSpeechEngine | null>(null);
   const micRef = useRef<MicrophoneCapture | null>(null);
   const translatorRef = useRef<Translator | null>(null);
+  const translatorLangPairRef = useRef<string>("");
+  const isInitializingTranslator = useRef(false);
+  const hasAnnouncedToPartner = useRef<string>("");
   const [copied, setCopied] = useState(false);
   const [translatorStatus, setTranslatorStatus] = useState("");
   const [isLoadingModel, setIsLoadingModel] = useState(false);
@@ -159,8 +162,12 @@ function RoomPageContent() {
                 lang: "",
                 isConnected: true,
               });
-              roomClientRef.current?.sendUserJoined(userId, userName);
-              roomClientRef.current?.sendLanguageSet(userId, myLang);
+              // Only re-announce once per partner to avoid infinite loop
+              if (hasAnnouncedToPartner.current !== joinedId) {
+                hasAnnouncedToPartner.current = joinedId;
+                roomClientRef.current?.sendUserJoined(userId, userName);
+                roomClientRef.current?.sendLanguageSet(userId, myLang);
+              }
             }
             break;
           }
@@ -189,6 +196,14 @@ function RoomPageContent() {
   useEffect(() => {
     if (!partner?.lang || partner.lang === myLang) return;
 
+    // Avoid re-initializing for the same language pair
+    const langPair = `${partner.lang}-${myLang}`;
+    if (translatorLangPairRef.current === langPair) return;
+    if (isInitializingTranslator.current) return;
+
+    isInitializingTranslator.current = true;
+    translatorLangPairRef.current = langPair;
+
     const caps = detectCapabilities();
 
     async function initTranslator() {
@@ -205,6 +220,7 @@ function RoomPageContent() {
           translatorRef.current = translator;
           setTranslatorStatus("Ready");
           setIsLoadingModel(false);
+          isInitializingTranslator.current = false;
           return;
         } catch (e) {
           console.warn("Chrome Translator failed, trying Transformers.js:", e);
@@ -226,6 +242,7 @@ function RoomPageContent() {
       }
 
       setIsLoadingModel(false);
+      isInitializingTranslator.current = false;
     }
 
     initTranslator();
