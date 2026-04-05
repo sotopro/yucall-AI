@@ -84,6 +84,11 @@ export class TransformersTranslator implements Translator {
         console.error("Translation worker error:", e);
         this.onStatus?.("Translation engine crashed. Try refreshing.");
         this.ready = false;
+        // Reject all pending promises so init() doesn't hang forever
+        for (const [id, cb] of this.pendingCallbacks) {
+          cb.reject(new Error("Worker crashed"));
+          this.pendingCallbacks.delete(id);
+        }
       };
 
       if (this.needsTwoStep) {
