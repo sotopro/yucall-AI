@@ -1,9 +1,5 @@
 import type { Translator } from "./translator";
 
-type TranslationPipeline = (
-  text: string,
-) => Promise<Array<{ translation_text: string }>>;
-
 const MODEL_MAP: Record<string, string> = {
   "en-es": "Xenova/opus-mt-en-es",
   "es-en": "Xenova/opus-mt-es-en",
@@ -11,13 +7,24 @@ const MODEL_MAP: Record<string, string> = {
   "zh-en": "Xenova/opus-mt-zh-en",
 };
 
+let messageId = 0;
+
+function nextId(): number {
+  return ++messageId;
+}
+
 export class TransformersTranslator implements Translator {
-  private pipeline: TranslationPipeline | null = null;
-  private secondPipeline: TranslationPipeline | null = null;
+  private worker: Worker | null = null;
   private ready = false;
   private sourceLang: string;
   private targetLang: string;
   private needsTwoStep: boolean;
+  private firstPipelineId = "p1";
+  private secondPipelineId = "p2";
+  private pendingCallbacks = new Map<
+    number,
+    { resolve: (v: unknown) => void; reject: (e: Error) => void }
+  >();
   private onStatus?: (message: string) => void;
 
   constructor(
@@ -33,60 +40,75 @@ export class TransformersTranslator implements Translator {
     this.onStatus = onStatus;
   }
 
-  private async loadModel(
-    modelName: string,
-    label: string,
-  ): Promise<TranslationPipeline> {
-    const { pipeline, env } = await import("@huggingface/transformers");
-
-    // Disable local model check to avoid errors on mobile
-    env.allowLocalModels = false;
-
-    this.onStatus?.(`Downloading ${label}...`);
-
-    const translator = await pipeline("translation", modelName, {
-      progress_callback: (progress: {
-        status: string;
-        progress?: number;
-        file?: string;
-      }) => {
-        if (progress.status === "progress" && progress.progress != null) {
-          const pct = Math.round(progress.progress);
-          this.onStatus?.(`Downloading ${label}: ${pct}%`);
-        } else if (progress.status === "done") {
-          this.onStatus?.(`${label} loaded`);
-        } else if (progress.status === "initiate") {
-          this.onStatus?.(`Preparing ${label}...`);
-        }
-      },
+  private sendMessage(
+    type: string,
+    data: Record<string, unknown>,
+  ): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const id = nextId();
+      this.pendingCallbacks.set(id, { resolve, reject });
+      this.worker!.postMessage({ type, id, data });
     });
+  }
 
-    return translator as unknown as TranslationPipeline;
+  private handleMessage(event: MessageEvent): void {
+    const { type, id, data } = event.data;
+
+    if (type === "status") {
+      this.onStatus?.(data.status);
+      return;
+    }
+
+    const callback = this.pendingCallbacks.get(id);
+    if (!callback) return;
+    this.pendingCallbacks.delete(id);
+
+    if (type === "error") {
+      callback.reject(new Error(data.error));
+    } else {
+      callback.resolve(data);
+    }
   }
 
   async init(): Promise<void> {
     try {
+      this.onStatus?.("Starting translation engine...");
+
+      this.worker = new Worker(
+        new URL("./translation-worker.js", import.meta.url),
+        { type: "module" },
+      );
+
+      this.worker.onmessage = (e) => this.handleMessage(e);
+      this.worker.onerror = (e) => {
+        console.error("Translation worker error:", e);
+        this.onStatus?.("Translation engine crashed. Try refreshing.");
+        this.ready = false;
+      };
+
       if (this.needsTwoStep) {
         if (this.sourceLang === "es") {
-          // es → en → zh
-          this.pipeline = await this.loadModel(
-            "Xenova/opus-mt-es-en",
-            "Spanish→English",
-          );
-          this.secondPipeline = await this.loadModel(
-            "Xenova/opus-mt-en-zh",
-            "English→Chinese",
-          );
+          await this.sendMessage("load", {
+            model: "Xenova/opus-mt-es-en",
+            label: "Spanish→English",
+            pipelineId: this.firstPipelineId,
+          });
+          await this.sendMessage("load", {
+            model: "Xenova/opus-mt-en-zh",
+            label: "English→Chinese",
+            pipelineId: this.secondPipelineId,
+          });
         } else {
-          // zh → en → es
-          this.pipeline = await this.loadModel(
-            "Xenova/opus-mt-zh-en",
-            "Chinese→English",
-          );
-          this.secondPipeline = await this.loadModel(
-            "Xenova/opus-mt-en-es",
-            "English→Spanish",
-          );
+          await this.sendMessage("load", {
+            model: "Xenova/opus-mt-zh-en",
+            label: "Chinese→English",
+            pipelineId: this.firstPipelineId,
+          });
+          await this.sendMessage("load", {
+            model: "Xenova/opus-mt-en-es",
+            label: "English→Spanish",
+            pipelineId: this.secondPipelineId,
+          });
         }
       } else {
         const modelKey = `${this.sourceLang}-${this.targetLang}`;
@@ -95,37 +117,59 @@ export class TransformersTranslator implements Translator {
           throw new Error(`No translation model available for ${modelKey}`);
         }
         const label = `${this.sourceLang.toUpperCase()}→${this.targetLang.toUpperCase()}`;
-        this.pipeline = await this.loadModel(model, label);
+        await this.sendMessage("load", {
+          model,
+          label,
+          pipelineId: this.firstPipelineId,
+        });
       }
 
       this.ready = true;
       this.onStatus?.("Ready");
     } catch (e) {
-      const errorMsg =
-        e instanceof Error ? e.message : "Unknown error loading model";
+      const msg = e instanceof Error ? e.message : "Unknown error";
       console.error("TransformersTranslator init failed:", e);
-      this.onStatus?.(`Error: ${errorMsg}`);
+      this.onStatus?.(`Error: ${msg}`);
+      this.terminate();
       throw e;
     }
   }
 
   async translate(text: string): Promise<string> {
-    if (!this.pipeline) {
+    if (!this.worker || !this.ready) {
       throw new Error("Translator not initialized");
     }
 
-    const result = await this.pipeline(text);
-    let translated = result[0]?.translation_text || text;
+    try {
+      const result = (await this.sendMessage("translate", {
+        pipelineId: this.firstPipelineId,
+        text,
+      })) as { translated: string };
 
-    if (this.needsTwoStep && this.secondPipeline) {
-      const secondResult = await this.secondPipeline(translated);
-      translated = secondResult[0]?.translation_text || translated;
+      let translated = result.translated;
+
+      if (this.needsTwoStep) {
+        const secondResult = (await this.sendMessage("translate", {
+          pipelineId: this.secondPipelineId,
+          text: translated,
+        })) as { translated: string };
+        translated = secondResult.translated;
+      }
+
+      return translated;
+    } catch {
+      return text;
     }
-
-    return translated;
   }
 
   isReady(): boolean {
     return this.ready;
+  }
+
+  private terminate(): void {
+    this.worker?.terminate();
+    this.worker = null;
+    this.ready = false;
+    this.pendingCallbacks.clear();
   }
 }
