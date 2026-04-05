@@ -40,10 +40,12 @@ export async function POST(req: NextRequest) {
     const contentType = req.headers.get("content-type") || "audio/webm";
 
     const params = new URLSearchParams({
-      language: dgLang,
       model: "nova-3",
       punctuate: "true",
       smart_format: "true",
+      // Auto-detect language to catch echo (e.g., Spanish coming through
+      // speaker when we expect Chinese) — discard if wrong language
+      detect_language: "true",
       // Detect actual speech utterances to avoid transcribing noise
       utterances: "true",
       // End-of-speech detection — helps ignore trailing noise
@@ -71,11 +73,22 @@ export async function POST(req: NextRequest) {
     }
 
     const data = await res.json();
-    const alt = data.results?.channels?.[0]?.alternatives?.[0];
+    const channel = data.results?.channels?.[0];
+    const alt = channel?.alternatives?.[0];
     const transcript = alt?.transcript || "";
     const confidence = alt?.confidence ?? 0;
+    const detectedLang = channel?.detected_language || alt?.languages?.[0] || "";
 
-    // Filter out hallucinations: low confidence or very short text
+    // Filter: wrong language detected (echo from partner's speaker)
+    if (detectedLang && dgLang) {
+      const expected = dgLang.split("-")[0]; // "zh-CN" → "zh"
+      const detected = detectedLang.split("-")[0];
+      if (detected !== expected) {
+        return NextResponse.json({ transcript: "" });
+      }
+    }
+
+    // Filter: low confidence or very short text (hallucinations/noise)
     if (confidence < MIN_CONFIDENCE || transcript.trim().length < MIN_TRANSCRIPT_LENGTH) {
       return NextResponse.json({ transcript: "" });
     }
