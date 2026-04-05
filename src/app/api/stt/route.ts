@@ -27,10 +27,11 @@ export async function POST(req: NextRequest) {
   try {
     const audioBuffer = await req.arrayBuffer();
 
-    if (audioBuffer.byteLength === 0) {
+    if (audioBuffer.byteLength < 4000) {
       return NextResponse.json({ transcript: "" });
     }
 
+    // Let Deepgram auto-detect format from the data
     const contentType = req.headers.get("content-type") || "audio/webm";
 
     const params = new URLSearchParams({
@@ -52,6 +53,10 @@ export async function POST(req: NextRequest) {
 
     if (!res.ok) {
       const errText = await res.text();
+      // 400 = corrupt/short audio, just return empty transcript
+      if (res.status === 400) {
+        return NextResponse.json({ transcript: "" });
+      }
       console.error("Deepgram API error:", res.status, errText);
       throw new Error(`Deepgram returned ${res.status}`);
     }
