@@ -256,8 +256,32 @@ function RoomPageContent() {
   }, [partner?.lang, myLang]);
 
   // --- Actions ---
+
+  // Filter out echo: if STT produces text in the wrong language
+  // (e.g., mic picks up partner's voice from speaker), discard it
+  const matchesMyLang = useCallback(
+    (text: string): boolean => {
+      if (myLang === "zh") {
+        // Chinese text must contain CJK characters
+        return /[\u4e00-\u9fff]/.test(text);
+      }
+      if (myLang === "es" || myLang === "en") {
+        // Spanish/English should NOT be mostly CJK
+        const cjkCount = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+        return cjkCount < text.length * 0.3;
+      }
+      return true;
+    },
+    [myLang],
+  );
+
   const handleSttSegment = useCallback(
     (segment: TranscriptSegment) => {
+      // Discard echo from partner's speaker
+      if (segment.isFinal && !matchesMyLang(segment.text)) {
+        return;
+      }
+
       hasProducedTranscript.current = true;
       if (sttFallbackTimer.current) {
         clearTimeout(sttFallbackTimer.current);
@@ -270,7 +294,7 @@ function RoomPageContent() {
         updateInterimTranscript(segment);
       }
     },
-    [addMyTranscript, updateInterimTranscript],
+    [addMyTranscript, updateInterimTranscript, matchesMyLang],
   );
 
   const startServerStt = useCallback(
