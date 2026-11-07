@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const MYMEMORY_API = "https://api.mymemory.translated.net/get";
+// Translation on the VPS: LibreTranslate on the internal network.
+const LIBRETRANSLATE_URL =
+  process.env.LIBRETRANSLATE_URL ?? "http://libretranslate.internal.evsn:5000";
 
-// Map internal lang codes to MyMemory codes
+// Map internal lang codes to LibreTranslate codes
 const LANG_MAP: Record<string, string> = {
   es: "es",
   en: "en",
-  zh: "zh-CN",
+  zh: "zh-Hans",
 };
 
 export async function GET(req: NextRequest) {
@@ -26,26 +28,23 @@ export async function GET(req: NextRequest) {
   const tgtCode = LANG_MAP[target] || target;
 
   try {
-    const url = `${MYMEMORY_API}?${new URLSearchParams({
-      q: text,
-      langpair: `${srcCode}|${tgtCode}`,
-    })}`;
-
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    const res = await fetch(`${LIBRETRANSLATE_URL}/translate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ q: text, source: srcCode, target: tgtCode, format: "text" }),
+      signal: AbortSignal.timeout(8000),
+    });
 
     if (!res.ok) {
-      throw new Error(`MyMemory API returned ${res.status}`);
+      throw new Error(`LibreTranslate returned ${res.status}`);
     }
 
-    const data = await res.json();
-
-    if (data.responseStatus !== 200) {
-      throw new Error(data.responseDetails || "Translation failed");
+    const data = (await res.json()) as { translatedText?: string };
+    if (typeof data.translatedText !== "string") {
+      throw new Error("Translation failed");
     }
 
-    return NextResponse.json({
-      translatedText: data.responseData.translatedText,
-    });
+    return NextResponse.json({ translatedText: data.translatedText });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Translation failed";
     return NextResponse.json({ error: msg }, { status: 502 });

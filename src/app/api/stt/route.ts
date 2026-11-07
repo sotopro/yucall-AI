@@ -1,39 +1,40 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const DEEPGRAM_API_URL = "https://api.deepgram.com/v1/listen";
+// Speech to text on the VPS: a Whisper server (speaches, OpenAI-compatible API) on the internal
+// network. The model is set by the server stack; WHISPER_MODEL can override it.
+const WHISPER_URL = process.env.WHISPER_URL ?? "http://whisper.internal.evsn:8000";
+const WHISPER_MODEL = process.env.WHISPER_MODEL ?? "Systran/faster-whisper-small";
 
-/** Minimum confidence to accept a transcript (filters hallucinations) */
-const MIN_CONFIDENCE = 0.5;
+/** Whisper's own hallucination limits: below this average log probability a segment is noise. */
+const MIN_AVG_LOGPROB = -1.0;
+/** A segment Whisper thinks is silence. */
+const MAX_NO_SPEECH_PROB = 0.6;
 
 /** Minimum transcript length to accept (single chars are usually noise) */
 const MIN_TRANSCRIPT_LENGTH = 2;
 
-// Languages that need Whisper (supports Cantonese, dialects, etc.)
-const WHISPER_LANGS = new Set(["zh", "zh-CN", "zh-HK"]);
-
-// Map internal lang codes to Deepgram base codes
-const LANG_MAP: Record<string, string> = {
-  es: "es",
-  en: "en",
-  zh: "zh",
-  "zh-CN": "zh",
-  "zh-HK": "zh",
-  "es-ES": "es",
-  "en-US": "en",
+// Whisper reports either the code or the English name of the language.
+const LANGUAGE_NAMES: Record<string, string> = {
+  spanish: "es",
+  english: "en",
+  chinese: "zh",
+  cantonese: "yue",
 };
+const CHINESE = new Set(["zh", "yue", "wuu", "nan", "hak", "cmn"]);
+
+type Segment = { text: string; avg_logprob: number; no_speech_prob: number };
+type Verbose = { text?: string; language?: string; segments?: Segment[] };
+
+function extension(contentType: string): string {
+  if (contentType.includes("mp4")) return "mp4";
+  if (contentType.includes("ogg")) return "ogg";
+  if (contentType.includes("wav")) return "wav";
+  return "webm";
+}
 
 export async function POST(req: NextRequest) {
-  const apiKey = process.env.DEEPGRAM_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json(
-      { error: "DEEPGRAM_API_KEY not configured" },
-      { status: 500 },
-    );
-  }
-
   const lang = req.nextUrl.searchParams.get("lang") || "zh";
-  const dgLang = LANG_MAP[lang] || lang;
-  const useWhisper = WHISPER_LANGS.has(lang) || WHISPER_LANGS.has(dgLang);
+  const expected = lang.split("-")[0];
 
   try {
     const audioBuffer = await req.arrayBuffer();
@@ -43,65 +44,48 @@ export async function POST(req: NextRequest) {
     }
 
     const contentType = req.headers.get("content-type") || "audio/webm";
+    const form = new FormData();
+    form.append(
+      "file",
+      new Blob([audioBuffer], { type: contentType }),
+      `chunk.${extension(contentType)}`,
+    );
+    form.append("model", WHISPER_MODEL);
+    // No language hint: detection catches echo from the partner's speaker (filtered below).
+    form.append("response_format", "verbose_json");
 
-    const params = new URLSearchParams({
-      // Whisper for Chinese (handles Mandarin + Cantonese + dialects)
-      // Nova-3 for everything else (faster, but Mandarin only)
-      model: useWhisper ? "whisper-large" : "nova-3",
-      punctuate: "true",
-      smart_format: "true",
-      // Auto-detect language to catch echo from partner's speaker
-      detect_language: "true",
-      utterances: "true",
-      endpointing: "300",
-    });
-
-    const res = await fetch(`${DEEPGRAM_API_URL}?${params}`, {
+    const res = await fetch(`${WHISPER_URL}/v1/audio/transcriptions`, {
       method: "POST",
-      headers: {
-        Authorization: `Token ${apiKey}`,
-        "Content-Type": contentType,
-      },
-      body: audioBuffer,
+      body: form,
       signal: AbortSignal.timeout(15000),
     });
 
     if (!res.ok) {
-      if (res.status === 400) {
+      if (res.status === 400 || res.status === 422) {
         return NextResponse.json({ transcript: "" });
       }
       const errText = await res.text();
-      console.error("Deepgram API error:", res.status, errText);
-      throw new Error(`Deepgram returned ${res.status}`);
+      console.error("Whisper error:", res.status, errText.slice(0, 300));
+      throw new Error(`Whisper returned ${res.status}`);
     }
 
-    const data = await res.json();
-    const channel = data.results?.channels?.[0];
-    const alt = channel?.alternatives?.[0];
-    const transcript = alt?.transcript || "";
-    const confidence = alt?.confidence ?? 0;
-    const detectedLang =
-      channel?.detected_language ||
-      data.results?.channels?.[0]?.alternatives?.[0]?.languages?.[0] ||
-      "";
+    const data = (await res.json()) as Verbose;
+    const segments = (data.segments ?? []).filter(
+      (s) => s.avg_logprob >= MIN_AVG_LOGPROB && s.no_speech_prob <= MAX_NO_SPEECH_PROB,
+    );
+    const transcript = segments.map((s) => s.text).join("").trim();
 
     // Filter: wrong language detected (echo from partner's speaker)
-    // For Chinese, accept zh, yue (Cantonese), wuu, nan, etc.
-    if (detectedLang) {
-      const detected = detectedLang.split("-")[0];
-      const isChinese = ["zh", "yue", "wuu", "nan", "hak", "cmn"].includes(detected);
-
-      if (useWhisper && !isChinese) {
-        // Expected Chinese but got something else → echo
-        return NextResponse.json({ transcript: "" });
-      }
-      if (!useWhisper && detected !== dgLang.split("-")[0]) {
+    const raw = (data.language ?? "").toLowerCase();
+    const detected = LANGUAGE_NAMES[raw] ?? raw.split("-")[0];
+    if (detected) {
+      if (expected === "zh" ? !CHINESE.has(detected) : detected !== expected) {
         return NextResponse.json({ transcript: "" });
       }
     }
 
-    // Filter: low confidence or very short text (hallucinations/noise)
-    if (confidence < MIN_CONFIDENCE || transcript.trim().length < MIN_TRANSCRIPT_LENGTH) {
+    // Filter: very short text (hallucinations/noise)
+    if (transcript.length < MIN_TRANSCRIPT_LENGTH) {
       return NextResponse.json({ transcript: "" });
     }
 

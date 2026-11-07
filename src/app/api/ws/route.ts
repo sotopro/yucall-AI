@@ -1,15 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Redis } from "@upstash/redis";
+import { getRedis, KEY_PREFIX } from "@/lib/server/redis";
 
 const MESSAGE_TTL = 300; // 5 minutes
-
-let _redis: Redis | null = null;
-function getRedis(): Redis {
-  if (!_redis) {
-    _redis = Redis.fromEnv();
-  }
-  return _redis;
-}
 
 // POST: Send a message to the room
 export async function POST(request: NextRequest) {
@@ -23,19 +15,19 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const key = `room:${roomId}:messages`;
+    const key = `${KEY_PREFIX}room:${roomId}:messages`;
     const ts = Date.now();
     const entry = JSON.stringify({ ...body, _ts: ts });
 
-    const redis = getRedis();
+    const redis = await getRedis();
     // Use sorted set with timestamp as score for reliable range queries
-    await redis.zadd(key, { score: ts, member: entry });
+    await redis.zAdd(key, { score: ts, value: entry });
     await redis.expire(key, MESSAGE_TTL);
 
     // Trim old messages (keep last 200)
-    const count = await redis.zcard(key);
+    const count = await redis.zCard(key);
     if (count > 200) {
-      await redis.zremrangebyrank(key, 0, count - 201);
+      await redis.zRemRangeByRank(key, 0, count - 201);
     }
 
     return NextResponse.json({ ok: true });
@@ -61,14 +53,14 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const key = `room:${roomId}:messages`;
+    const key = `${KEY_PREFIX}room:${roomId}:messages`;
 
     // Capture timestamp BEFORE reading Redis to avoid missing messages
     const timestamp = Date.now();
 
     // Fetch messages with score > since (exclusive) using sorted set
-    const raw = await getRedis().zrange(key, `(${since}`, "+inf", {
-      byScore: true,
+    const raw = await (await getRedis()).zRange(key, `(${since}`, "+inf", {
+      BY: "SCORE",
     });
 
     const messages = (Array.isArray(raw) ? raw : [])
