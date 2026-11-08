@@ -1,0 +1,35 @@
+# CI on the company Forgejo (infra repo, INF-21). Forgejo mirrors this repository from GitHub;
+# every push to develop, feat/vps-migration builds the VPS image. Jobs cannot sign: the host signer repeats the SBOM
+# and vulnerability scan and signs with the OpenBao key.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # The CI reaches Forgejo on its internal address; the public one is behind Cloudflare Access.
+  REPO_URL: http://10.99.0.1:3000/${{ forgejo.repository }}.git
+
+jobs:
+  image:
+    runs-on: evsn-ci
+    steps:
+      - name: Build and push the image
+        env:
+          TOKEN: ${{ forgejo.token }}
+          SHA: ${{ forgejo.sha }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          set -eu
+          git -c http.extraHeader="Authorization: token $TOKEN" clone --quiet "$REPO_URL" src
+          cd src && git checkout --quiet "$SHA"
+          registry=10.99.0.1:5000; name=yucall; tag="git-$(echo "$SHA" | cut -c1-12)"
+          ref="$registry/evsn/$name:$tag"
+          printf '%s' "$REGISTRY_PASSWORD" | docker login "$registry" -u evsn --password-stdin >/dev/null
+          docker build -q --pull \
+            --label "org.opencontainers.image.revision=$SHA" \
+            --label org.opencontainers.image.source=sotopro/yucall-AI -t "$ref" . >/dev/null
+          docker push -q "$ref" >/dev/null
+          digest="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" | sed -n "s|^$registry/evsn/$name@||p" | head -1)"
+          # What the host signer (evsn-ci-sign) looks for.
+          echo "== pushed: $registry/evsn/$name:$tag@$digest"

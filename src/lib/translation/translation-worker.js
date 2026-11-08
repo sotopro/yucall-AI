@@ -11,8 +11,10 @@ self.onmessage = async (event) => {
       try {
         const { pipeline, env } = await import("@huggingface/transformers");
         env.allowLocalModels = false;
-        // Use HuggingFace mirror for users in China (huggingface.co is blocked)
-        env.remoteHost = "https://hf-mirror.com";
+        // Models and the ONNX runtime come from our own host (the VPS), not from Hugging Face
+        // or a CDN: /models/<model>/resolve/main/<file> and /ort/<file>.
+        env.remoteHost = `${self.location.origin}/models/`;
+        env.backends.onnx.wasm.wasmPaths = `${self.location.origin}/ort/`;
         // Force WASM backend to avoid WebGPU/WebNN quantization issues
         env.backends.onnx.wasm.proxy = false;
 

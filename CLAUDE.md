@@ -11,20 +11,20 @@ yucall-AI is a real-time bidirectional translation app for calls. Two people in 
 - **Framework**: Next.js 16 (App Router) with TypeScript
 - **UI**: shadcn/ui + Tailwind CSS v4
 - **State**: Zustand
-- **Sync**: Upstash Redis + HTTP polling via Next.js API routes
+- **Sync**: Redis on the VPS + HTTP polling via Next.js API routes
 - **STT**: Web Speech API (Chrome + Safari)
 - **Translation (Chrome)**: Chrome Translator API (local, on-device)
 - **Translation (Safari/fallback)**: Transformers.js + OPUS-MT models (local, in-browser)
-- **Deploy**: Vercel
+- **Deploy**: company VPS (Docker Swarm), image built by Forgejo CI from `main`
 
 ## Architecture
 
 ```
-Browser A (mic → STT → text) ──→ Vercel API + Redis ──→ Browser B (text → translate → display)
-Browser B (mic → STT → text) ──→ Vercel API + Redis ──→ Browser A (text → translate → display)
+Browser A (mic → STT → text) ──→ VPS API + Redis ──→ Browser B (text → translate → display)
+Browser B (mic → STT → text) ──→ VPS API + Redis ──→ Browser A (text → translate → display)
 ```
 
-All heavy processing (STT + translation) runs in the browser. The server only relays text messages (~100 bytes each) via Upstash Redis. Translation happens on the **receiver's** browser.
+All heavy processing (STT + translation) runs in the browser. The server only relays text messages (~100 bytes each) via Redis on the VPS. Translation happens on the **receiver's** browser.
 
 ## Project Structure
 
@@ -33,7 +33,7 @@ src/
   app/
     page.tsx                         # Landing: create/join room
     room/[id]/page.tsx               # Main translation session
-    api/ws/route.ts                  # HTTP polling relay (Upstash Redis)
+    api/ws/route.ts                  # HTTP polling relay (Redis)
     layout.tsx                       # Root layout
     globals.css                      # Global styles + shadcn theme
   components/
@@ -67,37 +67,27 @@ npx tsc --noEmit # Type check
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `UPSTASH_REDIS_REST_URL` | Yes | Upstash Redis REST API URL |
-| `UPSTASH_REDIS_REST_TOKEN` | Yes | Upstash Redis REST API token |
+| `REDIS_URL` | Yes | Redis URL (`rediss://` on the VPS; keys under `yc:`) |
+| `WHISPER_URL` | No | Whisper server (speaches, OpenAI API); default `http://whisper.internal.evsn:8000` |
+| `WHISPER_MODEL` | No | Default `Systran/faster-whisper-small` |
+| `LIBRETRANSLATE_URL` | No | Default `http://libretranslate.internal.evsn:5000` |
+
+Everything runs on the company VPS: no third-party services. The browser loads the translation
+models from `/models/` and the ONNX runtime from `/ort/` on the same host.
 
 ### Local development
 
 ```bash
 cp .env.example .env.local
-# Fill in your Upstash Redis credentials
+# REDIS_URL=redis://localhost:6379, plus local speaches and LibreTranslate containers if needed
 npm run dev
 ```
 
-### Getting Upstash credentials (free)
+## Deploy
 
-1. Go to https://console.upstash.com/
-2. Create a free account
-3. Create a new Redis database (any region)
-4. Copy the `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from the dashboard
+Merging to `main` builds the image on the company Forgejo CI; the infra repo deploys it
+(`stacks/yucall.yml`).
 
-## Deploy to Vercel
-
-1. Push code to GitHub
-2. Import repository in Vercel dashboard (https://vercel.com/new)
-3. Add environment variables in Vercel project settings:
-   - `UPSTASH_REDIS_REST_URL`
-   - `UPSTASH_REDIS_REST_TOKEN`
-4. Deploy
-
-Or via CLI:
-```bash
-npx vercel --prod
-```
 
 ## Development Guidelines
 
