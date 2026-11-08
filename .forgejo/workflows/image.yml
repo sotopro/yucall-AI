@@ -3,7 +3,7 @@
 # and vulnerability scan and signs with the OpenBao key.
 on:
   push:
-    branches: [main, feat/vps-migration]
+    branches: [main]
   workflow_dispatch:
 
 env:
